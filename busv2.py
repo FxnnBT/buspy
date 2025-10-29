@@ -1,58 +1,48 @@
 import requests
 import datetime
-import time
 import os
+import time
 
-# === SETTINGS ===
-STOP_ID = "30002405"           # TimingPointCode for Amsterdam, Contactweg
+STOP_AREA = "50005050"     # Contactweg
 LINE_NUMBER = "22"
 DIRECTION = "Muiderpoortstation"
-REFRESH_INTERVAL = 30          # seconds between updates
+REFRESH_INTERVAL = 30      # seconds
 
-def get_schedule(stop_id):
-    url = f"http://v0.ovapi.nl/tpc/{stop_id}"
+def get_departures():
+    url = f"https://api.gvb.nl/api/v1/stop-areas/{STOP_AREA}/departures"
     resp = requests.get(url)
     resp.raise_for_status()
     return resp.json()
 
-def find_next_bus(schedule, line, direction):
-    now = datetime.datetime.now(datetime.timezone.utc)
+def find_next_bus(data):
+    now = datetime.datetime.now()
     next_bus = None
 
-    for _, stop_data in schedule.items():
-        for _, vehicle in stop_data.get("Passes", {}).items():
-            try:
-                line_num = vehicle.get("LinePublicNumber", "")
-                dest = vehicle.get("DestinationName50", "")
-                target_time = vehicle.get("TargetDepartureTime", "")
-                expected_time = vehicle.get("ExpectedDepartureTime", "")
+    for dep in data.get("departures", []):
+        line = dep.get("linePublicNumber", "")
+        dest = dep.get("destinationName", "")
+        time_planned = dep.get("plannedDepartureTime")
+        time_expected = dep.get("expectedDepartureTime")
 
-                if not target_time or line_num != line or direction.lower() not in dest.lower():
-                    continue
+        if line != LINE_NUMBER or DIRECTION.lower() not in dest.lower():
+            continue
 
-                target_dt = datetime.datetime.fromisoformat(target_time.replace("Z", "+00:00"))
-                expected_dt = (
-                    datetime.datetime.fromisoformat(expected_time.replace("Z", "+00:00"))
-                    if expected_time else target_dt
-                )
+        planned = datetime.datetime.fromisoformat(time_planned.replace("Z", "+00:00"))
+        expected = datetime.datetime.fromisoformat(time_expected.replace("Z", "+00:00")) if time_expected else planned
+        delay = int((expected - planned).total_seconds() / 60)
+        mins = int((expected - datetime.datetime.now(datetime.timezone.utc)).total_seconds() / 60)
 
-                if expected_dt > now:
-                    delay = int((expected_dt - target_dt).total_seconds() / 60)
-                    mins_left = int((expected_dt - now).total_seconds() / 60)
-
-                    if next_bus is None or expected_dt < next_bus["expected"]:
-                        next_bus = {
-                            "target": target_dt,
-                            "expected": expected_dt,
-                            "delay": delay,
-                            "mins_left": mins_left
-                        }
-            except Exception:
-                continue
+        next_bus = {
+            "planned": planned,
+            "expected": expected,
+            "delay": delay,
+            "mins": mins
+        }
+        break
 
     return next_bus
 
-def show_next_bus():
+def main():
     while True:
         os.system("clear")
         print(f"🚌  Eerstvolgende buslijn {LINE_NUMBER} → {DIRECTION}")
@@ -61,16 +51,16 @@ def show_next_bus():
         print("-" * 60)
 
         try:
-            schedule = get_schedule(STOP_ID)
-            next_bus = find_next_bus(schedule, LINE_NUMBER, DIRECTION)
+            data = get_departures()
+            bus = find_next_bus(data)
 
-            if not next_bus:
+            if not bus:
                 print("⚠️  Geen aankomende bus gevonden.")
             else:
-                planned = next_bus["target"].astimezone().strftime("%H:%M")
-                eta = next_bus["expected"].astimezone().strftime("%H:%M")
-                delay = next_bus["delay"]
-                mins = next_bus["mins_left"]
+                planned = bus["planned"].astimezone().strftime("%H:%M")
+                expected = bus["expected"].astimezone().strftime("%H:%M")
+                delay = bus["delay"]
+                mins = bus["mins"]
 
                 if delay > 0:
                     delay_str = f"(+{delay} min vertraging)"
@@ -80,7 +70,7 @@ def show_next_bus():
                     delay_str = "(op tijd)"
 
                 print(f"🕓  Gepland vertrek:  {planned}")
-                print(f"⏰  Verwacht vertrek: {eta} {delay_str}")
+                print(f"⏰  Verwacht vertrek: {expected} {delay_str}")
                 print(f"⌛  Over {mins} minuten\n")
 
         except Exception as e:
@@ -91,4 +81,4 @@ def show_next_bus():
         time.sleep(REFRESH_INTERVAL)
 
 if __name__ == "__main__":
-    show_next_bus()
+    main()
