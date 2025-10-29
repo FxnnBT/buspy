@@ -5,30 +5,30 @@ import os
 
 # === SETTINGS ===
 STOP_ID = "00001"              # StopAreaCode for Station Sloterdijk
+LINE_NUMBER = "22"
+DIRECTION = "Muiderpoortstation"
 REFRESH_INTERVAL = 30          # seconds between updates
 
 def get_schedule(stop_id):
-    # Use the StopAreaCode endpoint
     url = f"http://v0.ovapi.nl/stopareacode/{stop_id}"
     resp = requests.get(url)
     resp.raise_for_status()
     return resp.json()
 
-def parse_buses(schedule):
+def find_next_bus(schedule, line, direction):
     now = datetime.datetime.now(datetime.timezone.utc)
-    departures = []
+    next_bus = None
 
     for _, area_data in schedule.items():
         for _, stop_data in area_data.get("TimingPoints", {}).items():
             for _, vehicle in stop_data.get("Passes", {}).items():
                 try:
-                    line = vehicle.get("LinePublicNumber", "")
-                    destination = vehicle.get("DestinationName50", "")
+                    line_num = vehicle.get("LinePublicNumber", "")
+                    dest = vehicle.get("DestinationName50", "")
                     target_time = vehicle.get("TargetDepartureTime", "")
                     expected_time = vehicle.get("ExpectedDepartureTime", "")
-                    transport_type = vehicle.get("TransportType", "BUS")
 
-                    if not target_time or not line:
+                    if not target_time or line_num != line or direction.lower() not in dest.lower():
                         continue
 
                     target_dt = datetime.datetime.fromisoformat(target_time.replace("Z", "+00:00"))
@@ -39,60 +39,58 @@ def parse_buses(schedule):
 
                     if expected_dt > now:
                         delay = int((expected_dt - target_dt).total_seconds() / 60)
-                        minutes_left = int((expected_dt - now).total_seconds() / 60)
-                        departures.append({
-                            "line": line,
-                            "dest": destination,
-                            "type": transport_type,
-                            "target": target_dt,
-                            "expected": expected_dt,
-                            "delay": delay,
-                            "mins_left": minutes_left
-                        })
+                        mins_left = int((expected_dt - now).total_seconds() / 60)
+
+                        # sla de eerstvolgende bus op (de vroegste)
+                        if next_bus is None or expected_dt < next_bus["expected"]:
+                            next_bus = {
+                                "target": target_dt,
+                                "expected": expected_dt,
+                                "delay": delay,
+                                "mins_left": mins_left
+                            }
                 except Exception:
                     continue
 
-    # sort by soonest expected departure
-    departures.sort(key=lambda x: x["expected"])
-    return departures[:10]  # show next 10 departures
+    return next_bus
 
-def show_live_board():
+def show_next_bus():
     while True:
         os.system("clear")
-        print("🚏  Live vertrektijden – Station Sloterdijk (StopArea 00001)")
+        print(f"🚌  Eerstvolgende buslijn {LINE_NUMBER} → {DIRECTION}")
+        print("📍  Halte: Station Sloterdijk (StopArea 00001)")
         print("⏱  Laatste update:", datetime.datetime.now().strftime("%H:%M:%S"))
-        print("-" * 90)
+        print("-" * 60)
 
         try:
             schedule = get_schedule(STOP_ID)
-            departures = parse_buses(schedule)
+            next_bus = find_next_bus(schedule, LINE_NUMBER, DIRECTION)
 
-            if not departures:
-                print("⚠️  Geen aankomende voertuigen gevonden.")
+            if not next_bus:
+                print("⚠️  Geen aankomende bus gevonden.")
             else:
-                for d in departures:
-                    planned = d["target"].astimezone().strftime("%H:%M")
-                    eta = d["expected"].astimezone().strftime("%H:%M")
-                    delay = d["delay"]
-                    mins = d["mins_left"]
+                planned = next_bus["target"].astimezone().strftime("%H:%M")
+                eta = next_bus["expected"].astimezone().strftime("%H:%M")
+                delay = next_bus["delay"]
+                mins = next_bus["mins_left"]
 
-                    if delay > 0:
-                        delay_str = f"+{delay} min"
-                    elif delay < 0:
-                        delay_str = f"{abs(delay)} min te vroeg"
-                    else:
-                        delay_str = "op tijd"
+                if delay > 0:
+                    delay_str = f"(+{delay} min vertraging)"
+                elif delay < 0:
+                    delay_str = f"({abs(delay)} min te vroeg)"
+                else:
+                    delay_str = "(op tijd)"
 
-                    print(f"{d['type']:<4} Lijn {d['line']:<3} → {d['dest']:<25} "
-                          f"Gepland: {planned:<5} Verwacht: {eta:<5} "
-                          f"({delay_str:>10})  → over {mins:>2} min")
+                print(f"🕓  Gepland vertrek:  {planned}")
+                print(f"⏰  Verwacht vertrek: {eta} {delay_str}")
+                print(f"⌛  Over {mins} minuten\n")
 
         except Exception as e:
             print("❌  Fout bij ophalen data:", e)
 
-        print("-" * 90)
+        print("-" * 60)
         print(f"Volgende update over {REFRESH_INTERVAL} seconden…")
         time.sleep(REFRESH_INTERVAL)
 
 if __name__ == "__main__":
-    show_live_board()
+    show_next_bus()
